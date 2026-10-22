@@ -1,0 +1,407 @@
+'use client';
+
+import { useEffect, useState } from 'react';
+import Link from 'next/link';
+import { 
+  FileText, Plus, Search, Filter, RefreshCw, 
+  Eye, CheckCircle2, XCircle, Printer, ArrowUpDown
+} from 'lucide-react';
+import { DashboardLayout } from '@/components/layout/dashboard-layout';
+import { Card, CardContent } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Badge } from '@/components/ui/badge';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import { SalesInvoice } from '@/types';
+import { formatCurrency, formatDate, getStatusColor, getPaymentStatusColor } from '@/lib/utils';
+import { api } from '@/lib/api';
+import toast from 'react-hot-toast';
+
+export default function SalesPage() {
+  const [invoices, setInvoices] = useState<SalesInvoice[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [search, setSearch] = useState('');
+  const [statusFilter, setStatusFilter] = useState<string>('all');
+  const [page, setPage] = useState(1);
+  const [total, setTotal] = useState(0);
+  const limit = 20;
+
+  // Post / Cancel confirmation dialog states
+  const [postingId, setPostingId] = useState<string | null>(null);
+  const [cancellingInvoice, setCancellingInvoice] = useState<SalesInvoice | null>(null);
+  const [cancelReason, setCancelReason] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const fetchSales = async () => {
+    setIsLoading(true);
+    try {
+      const params: Record<string, any> = {
+        limit,
+        offset: (page - 1) * limit,
+        sort_by: 'invoice_date',
+        sort_order: 'desc',
+      };
+      if (statusFilter && statusFilter !== 'all') {
+        params.status = statusFilter;
+      }
+      const response = await api.get('/api/sales', { params });
+      const data = response.data;
+      if (data && Array.isArray(data.items)) {
+        setInvoices(data.items);
+        setTotal(data.total || data.items.length);
+      } else if (Array.isArray(data)) {
+        setInvoices(data);
+        setTotal(data.length);
+      } else {
+        setInvoices([]);
+        setTotal(0);
+      }
+    } catch (error: any) {
+      toast.error('Failed to load sales invoices');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchSales();
+  }, [statusFilter, page]);
+
+  const handlePostInvoice = async (id: string) => {
+    try {
+      setIsSubmitting(true);
+      await api.post(`/api/sales/${id}/post`, { amount_received: 0 });
+      toast.success('Sales invoice posted! Stock deducted.');
+      setPostingId(null);
+      fetchSales();
+    } catch (error: any) {
+      const msg = error?.response?.data?.detail || error?.response?.data?.error?.message || 'Failed to post sales invoice';
+      toast.error(msg);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleCancelInvoice = async () => {
+    if (!cancellingInvoice) return;
+    try {
+      setIsSubmitting(true);
+      if (cancellingInvoice.status === 'draft') {
+        await api.delete(`/api/sales/${cancellingInvoice.id}`);
+        toast.success('Draft sales invoice deleted');
+      } else {
+        if (!cancelReason.trim()) {
+          toast.error('Please specify a cancellation reason');
+          return;
+        }
+        await api.post(`/api/sales/${cancellingInvoice.id}/cancel`, null, {
+          params: { reason: cancelReason },
+        });
+        toast.success('Sales invoice cancelled');
+      }
+      setCancellingInvoice(null);
+      setCancelReason('');
+      fetchSales();
+    } catch (error: any) {
+      const msg = error?.response?.data?.detail || error?.response?.data?.error?.message || 'Failed to cancel invoice';
+      toast.error(msg);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const filteredInvoices = invoices.filter((inv) => {
+    if (!search.trim()) return true;
+    const q = search.toLowerCase();
+    return (
+      inv.invoice_number.toLowerCase().includes(q) ||
+      (inv.customer?.name && inv.customer.name.toLowerCase().includes(q))
+    );
+  });
+
+  return (
+    <DashboardLayout>
+      <div className="space-y-6">
+        {/* Header */}
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+          <div>
+            <h1 className="text-2xl font-bold tracking-tight">Sales Invoices</h1>
+            <p className="text-sm text-muted-foreground">
+              Manage customer billing, batch dispatch, and accounts receivable
+            </p>
+          </div>
+          <Button asChild size="sm">
+            <Link href="/sales/new">
+              <Plus className="mr-2 h-4 w-4" />
+              New Sales Invoice
+            </Link>
+          </Button>
+        </div>
+
+        {/* Filter Bar */}
+        <Card>
+          <CardContent className="p-4">
+            <div className="flex flex-col md:flex-row gap-4 items-center justify-between">
+              <div className="relative w-full md:w-80">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                <Input
+                  placeholder="Search invoice #, customer name..."
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  className="pl-9"
+                />
+              </div>
+
+              {/* Status Filters */}
+              <div className="flex items-center gap-1.5 w-full md:w-auto overflow-x-auto pb-1 md:pb-0">
+                {['all', 'draft', 'posted', 'cancelled'].map((st) => (
+                  <Button
+                    key={st}
+                    variant={statusFilter === st ? 'default' : 'outline'}
+                    size="sm"
+                    className="capitalize text-xs h-8"
+                    onClick={() => {
+                      setStatusFilter(st);
+                      setPage(1);
+                    }}
+                  >
+                    {st === 'all' ? 'All Invoices' : st}
+                  </Button>
+                ))}
+
+                <Button variant="ghost" size="sm" onClick={() => fetchSales()} className="h-8 px-2 ml-auto">
+                  <RefreshCw className="h-4 w-4" />
+                </Button>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Sales Invoices Table */}
+        <Card>
+          <CardContent className="p-0">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Invoice #</TableHead>
+                  <TableHead>Customer</TableHead>
+                  <TableHead>Date</TableHead>
+                  <TableHead className="text-right">Total Amount</TableHead>
+                  <TableHead className="text-right">Balance Due</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead>Payment</TableHead>
+                  <TableHead className="text-right">Actions</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {isLoading ? (
+                  <TableRow>
+                    <TableCell colSpan={8} className="text-center py-12 text-muted-foreground">
+                      <div className="flex items-center justify-center gap-2">
+                        <RefreshCw className="h-4 w-4 animate-spin" />
+                        Loading sales invoices...
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                ) : filteredInvoices.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={8} className="text-center py-12">
+                      <FileText className="mx-auto h-10 w-10 text-muted-foreground/50 mb-3" />
+                      <p className="text-base font-medium">No sales invoices found</p>
+                      <p className="text-sm text-muted-foreground mb-4">
+                        {search ? 'Try adjusting your search criteria' : 'Create your first customer invoice with FEFO allocation'}
+                      </p>
+                      <Button asChild size="sm">
+                        <Link href="/sales/new">Create Sales Invoice</Link>
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  filteredInvoices.map((inv) => (
+                    <TableRow key={inv.id}>
+                      <TableCell className="font-mono text-xs font-semibold">
+                        <Link href={`/sales/${inv.id}`} className="text-primary hover:underline">
+                          {inv.invoice_number}
+                        </Link>
+                      </TableCell>
+                      <TableCell className="font-medium">
+                        {inv.customer?.name || '—'}
+                      </TableCell>
+                      <TableCell className="text-xs text-muted-foreground">
+                        {formatDate(inv.invoice_date)}
+                      </TableCell>
+                      <TableCell className="text-right font-mono text-sm font-medium">
+                        {formatCurrency(inv.total_amount)}
+                      </TableCell>
+                      <TableCell className="text-right font-mono text-sm">
+                        <span className={inv.balance_amount > 0 ? 'text-amber-600 font-medium' : 'text-muted-foreground'}>
+                          {formatCurrency(inv.balance_amount)}
+                        </span>
+                      </TableCell>
+                      <TableCell>
+                        <Badge variant="outline" className={getStatusColor(inv.status)}>
+                          {inv.status}
+                        </Badge>
+                      </TableCell>
+                      <TableCell>
+                        <Badge variant="outline" className={getPaymentStatusColor(inv.payment_status)}>
+                          {inv.payment_status}
+                        </Badge>
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <div className="flex items-center justify-end gap-1">
+                          <Button asChild variant="ghost" size="icon" className="h-8 w-8" title="View & Print">
+                            <Link href={`/sales/${inv.id}`}>
+                              <Eye className="h-4 w-4" />
+                            </Link>
+                          </Button>
+
+                          <Button asChild variant="ghost" size="icon" className="h-8 w-8" title="Print Invoice">
+                            <Link href={`/sales/${inv.id}?print=true`}>
+                              <Printer className="h-4 w-4" />
+                            </Link>
+                          </Button>
+
+                          {inv.status === 'draft' && (
+                            <>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-8 w-8 text-green-600 hover:text-green-700 hover:bg-green-50"
+                                title="Post Invoice"
+                                onClick={() => setPostingId(inv.id)}
+                              >
+                                <CheckCircle2 className="h-4 w-4" />
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-8 w-8 text-destructive hover:bg-destructive/10"
+                                title="Delete Draft"
+                                onClick={() => setCancellingInvoice(inv)}
+                              >
+                                <XCircle className="h-4 w-4" />
+                              </Button>
+                            </>
+                          )}
+
+                          {inv.status === 'posted' && (
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-8 w-8 text-destructive hover:bg-destructive/10"
+                              title="Cancel Invoice"
+                              onClick={() => setCancellingInvoice(inv)}
+                            >
+                              <XCircle className="h-4 w-4" />
+                            </Button>
+                          )}
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  ))
+                )}
+              </TableBody>
+            </Table>
+          </CardContent>
+        </Card>
+
+        {/* Pagination controls */}
+        {total > limit && (
+          <div className="flex items-center justify-between px-2">
+            <p className="text-xs text-muted-foreground">
+              Showing {(page - 1) * limit + 1} to {Math.min(page * limit, total)} of {total} entries
+            </p>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={page <= 1}
+                onClick={() => setPage((p) => Math.max(p - 1, 1))}
+              >
+                Previous
+              </Button>
+              <span className="text-xs font-medium px-2">Page {page}</span>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={page * limit >= total}
+                onClick={() => setPage((p) => p + 1)}
+              >
+                Next
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {/* Post Confirmation Dialog */}
+        <Dialog open={!!postingId} onOpenChange={(open) => !open && setPostingId(null)}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Post Sales Invoice</DialogTitle>
+              <DialogDescription>
+                Posting this invoice will deduct batch stock, register Cost of Goods Sold (COGS), and record accounts receivable for the customer.
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setPostingId(null)} disabled={isSubmitting}>
+                Cancel
+              </Button>
+              <Button onClick={() => postingId && handlePostInvoice(postingId)} disabled={isSubmitting}>
+                {isSubmitting ? 'Posting...' : 'Confirm & Post'}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* Cancel Confirmation Dialog */}
+        <Dialog open={!!cancellingInvoice} onOpenChange={(open) => !open && setCancellingInvoice(null)}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>
+                {cancellingInvoice?.status === 'draft' ? 'Delete Draft Invoice' : 'Cancel Sales Invoice'}
+              </DialogTitle>
+              <DialogDescription>
+                {cancellingInvoice?.status === 'draft'
+                  ? 'Are you sure you want to delete this draft invoice?'
+                  : 'Please state the reason for cancelling this invoice.'}
+              </DialogDescription>
+            </DialogHeader>
+            {cancellingInvoice?.status === 'posted' && (
+              <div className="py-2">
+                <Input
+                  placeholder="Cancellation reason (required)..."
+                  value={cancelReason}
+                  onChange={(e) => setCancelReason(e.target.value)}
+                />
+              </div>
+            )}
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setCancellingInvoice(null)} disabled={isSubmitting}>
+                Dismiss
+              </Button>
+              <Button variant="destructive" onClick={handleCancelInvoice} disabled={isSubmitting}>
+                {isSubmitting ? 'Processing...' : cancellingInvoice?.status === 'draft' ? 'Delete Draft' : 'Confirm Cancel'}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      </div>
+    </DashboardLayout>
+  );
+}
